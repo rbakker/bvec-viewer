@@ -1,0 +1,234 @@
+<!doctype html>
+<html>
+<head>
+
+<style>
+body,div,table,canvas {
+    box-sizing: border-box;
+    margin: 0px;
+    border: 0px;
+    padding: 0px;
+}
+ul {
+  margin: 1ex 0ex;
+}
+</style>
+
+<script src="./plotly-3.0.1.min.js"></script>
+<!--script src="./jsm/FileSaver.min.js"></script-->
+
+<script type="module">
+window.bodyOnload = async () => {
+}
+
+window.allowDrop = (evt) => {
+  evt.preventDefault();
+}
+
+window.drag = (evt) => {
+  evt.dataTransfer.setData("text", evt.target.id);
+}
+
+
+window.drop = (evt) => {
+  console.log("File(s) dropped");
+  evt.preventDefault();
+  window.loadFiles(evt);
+}
+
+</script>
+
+</head>
+<body onload="bodyOnload()" style="width:100%; height:100vh; overflow-y:scroll" ondrop="drop(event)" ondragover="allowDrop(event)">
+<div id="controls" style="position:relative; padding: 1ex; z-index:10">
+Load FSL-style .bvec and .bval pair of files by drag/drop to view gradient directions, or open file browser: <input type="file" onchange="loadFiles(event)" multiple/>
+<div style="width:100%; border: 1ex solid #aaf; padding: 1ex; margin:1ex 0ex">
+<i>Results appear here.</i><div id="result" style="position: relative; width:100%"></div>
+</div>
+<div style="width:100%; border: 1ex solid #aaa; padding: 1ex; margin:1ex 0ex">
+<i>Logging happens here.</i><div id="console" style="position: relative; width:100%"></div>
+</div>
+<script type="module">
+
+function readFileAsText(file){
+  return new Promise((resolve, reject) => {
+      var fr = new FileReader();  
+      fr.onload = () => {
+          resolve(fr.result);
+      };
+      fr.onerror = reject;
+      fr.readAsText(file);
+  });
+}
+
+// helper routines for adding elements to the Document Object Model
+class DomElem {
+    constructor(elem,attrs) {
+        if (typeof elem === 'string') {
+            if (elem == '') elem = document.createTextNode(attrs);
+            else if (elem[0] == '#') elem = document.getElementById(elem.slice(1))
+            else elem = document.createElement(elem);
+        }
+        if (attrs) for (let k in attrs) elem[k] = attrs[k];
+        this.elem = elem;
+    }
+
+    append(...elems) {
+        for (let ch of elems) {
+            if (ch instanceof DomElem) ch = ch.elem;
+            this.elem.appendChild(ch);
+        }
+        return this;
+    }
+}
+
+// shorthand for DomElem constructor
+function el(elem,attrs) {
+    return new DomElem(elem,attrs)
+}
+    
+class Progress {
+    constructor() {
+        this.consoleDiv = el('#console');
+        this.progressStack = [this.consoleDiv];
+        this.resultDiv = el('#result');
+        this.indent = 0;
+    }
+    
+    log() {
+        const elems = []
+        for (let arg of arguments) {
+            if (!(arg instanceof DomElem)) arg = el('div',{innerHTML:arg});
+            elems.push(arg)
+        }
+        this.progressStack.at(-1).append(...elems);
+    }
+    
+    abort(msg) {
+        this.log('<b style="color:red">'+msg+'</b>');
+        throw(msg);
+    }
+
+    result(...elems) {
+        this.resultDiv.append(...elems);
+    }
+    
+    start(taskName) {
+        console.log('Start',taskName);
+        const indentBlock = el('div',{'style':'position: relative; left:4ex'});
+        this.progressStack.at(-1).append(
+            el('','Start '+taskName),
+            el('br'),
+            indentBlock
+        );
+        this.progressStack.push(indentBlock)
+    }
+
+    finish(taskName) {
+        this.progressStack.pop()
+        this.progressStack.at(-1).append(
+           el('','Finish '+taskName),
+           el('br')
+        );
+        console.log('Finish',taskName);
+    }
+
+    clear() {
+        this.resultDiv.elem.innerHTML = '';
+        this.consoleDiv.elem.innerHTML = '';
+        this.progressStack = [this.consoleDiv];
+    }
+}
+
+window.progress = new Progress();
+
+async function loadFiles(evt) {
+    let files = []
+    if (evt.dataTransfer) {
+        if (evt.dataTransfer.items) {
+            [...evt.dataTransfer.items].forEach((item, i) => {
+                if (item.kind === "file") files.push(item.getAsFile());
+            });
+        } else {
+            [...evt.dataTransfer.files].forEach((file, i) => {
+                files.push(item.getAsFile());
+            });
+        }
+    } else {
+        files = evt.target.files;
+    }
+
+    let bvecFile = undefined
+    let bvalFile = undefined
+    if (files.length>=2) {
+        if (files[0].name.endsWith('.bvec')) bvecFile = files[0]
+        if (files[0].name.endsWith('.bval')) bvalFile = files[0]
+        if (files[1].name.endsWith('.bvec')) bvecFile = files[1]
+        if (files[1].name.endsWith('.bval')) bvalFile = files[1]
+    }
+    if (!(bvecFile && bvalFile)) {
+        progress.abort('Need both .bvec and .bval file, try again.')
+    }
+    
+    let bvals = await readFileAsText(bvalFile);
+    console.log('['+bvals.replace(/[\s]+/g,',')+']')
+    bvals = JSON.parse('['+bvals.trim().replace(/[\s]+/g,',')+']')
+    console.log(bvals);
+    let bvecs = await readFileAsText(bvecFile);
+    const rows = bvecs.trim().split('\n')
+    for (let dim of [0,1,2]) {
+        rows[dim] = JSON.parse('['+rows[dim].trim().replace(/[\s]+/g,',')+']')
+    }
+    bvecs = []
+    for (let i=0; i<bvals.length; i++) {
+        bvecs.push([rows[0][i],rows[1][i],rows[2][i]]);
+    }
+    
+    let mx = 0;
+    for (let i=0; i<bvals.length; i++) {
+        if (Math.abs(bvals[i])>mx) mx = Math.abs(bvals[i]);
+    }
+    
+    let x = [];
+    let y = [];
+    let z = [];
+    for (let i=0; i<bvals.length; i++) {
+        x.push(bvecs[i][0]*bvals[i]/mx);
+        y.push(bvecs[i][1]*bvals[i]/mx);
+        z.push(bvecs[i][2]*bvals[i]/mx);
+    }
+    
+    var trace1 = {
+      x: x,
+      y: y,
+      z: z,
+      marker: { size: 3 },
+      name: 'Gradients',
+      type: 'scatter3d',
+      mode: 'markers',
+    };
+
+    const mesh = await fetch('spheremesh.json').then((response)=>response.json());
+    var trace2 = {
+        x: mesh[0],
+        y: mesh[1],
+        z: mesh[2],
+        type: 'surface',
+        opacity: 0.2,
+        colorscale: 'Greys',
+        showscale: false
+    };
+
+
+    var data = [trace1, trace2];
+
+    var layout = { title: { text: 'Gradient directions for file '+bvecFile.name+', multiplied by bval/'+mx+'.' } };
+
+    progress.start('Display gradient directions');
+    progress.resultDiv.elem.style.height = '100vh';
+    Plotly.newPlot('result', data, layout);
+    progress.finish('Display gradient directions');
+}
+window.loadFiles = loadFiles;
+</script>
+</body></html>
